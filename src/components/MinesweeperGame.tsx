@@ -15,23 +15,22 @@ import {
   screenToGrid,
   render,
   triggerShake,
+  spawnPopup,
   RendererState,
 } from "@/engine/renderer";
 import { spawnExplosion } from "@/engine/particles";
 import { sound } from "@/engine/audio";
-
-export type Difficulty = {
-  name: string;
-  rows: number;
-  cols: number;
-  mines: number;
-};
-
-const DIFFICULTIES: Difficulty[] = [
-  { name: "Facile", rows: 9, cols: 9, mines: 10 },
-  { name: "Moyen", rows: 16, cols: 16, mines: 40 },
-  { name: "Difficile", rows: 16, cols: 30, mines: 99 },
-];
+import { createScoringState, onReveal, ScoringState } from "@/engine/scoring";
+import {
+  GameModeConfig,
+  GameModeType,
+  CLASSIC_DIFFICULTIES,
+  SPEED_DEMON_CONFIG,
+  SpeedDemonState,
+  createSpeedDemonState,
+  updateSpeedDemonTimer,
+  onSpeedDemonReveal,
+} from "@/engine/gamemode";
 
 const HUD_HEIGHT = 56;
 const FADE_DURATION = 300;
@@ -42,19 +41,23 @@ export default function MinesweeperGame() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<MinesweeperEngine | null>(null);
   const rendererRef = useRef<RendererState>(createRendererState());
-  const timerRef = useRef(0);
+  const timerRef = useRef(0); // classic: seconds elapsed
   const timerIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const rafRef = useRef<number>(0);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const transitionCallbackRef = useRef<(() => void) | null>(null);
+  const scoringRef = useRef<ScoringState>(createScoringState());
+  const speedDemonRef = useRef<SpeedDemonState | null>(null);
+  const gameModeRef = useRef<GameModeConfig>(CLASSIC_DIFFICULTIES[0]);
 
   const [screen, setScreen] = useState<Screen>("menu");
-  const [difficulty, setDifficulty] = useState<Difficulty>(DIFFICULTIES[0]);
+  const [modeConfig, setModeConfig] = useState<GameModeConfig>(CLASSIC_DIFFICULTIES[0]);
   const [gameState, setGameState] = useState<GameState>("idle");
   const [finalTime, setFinalTime] = useState(0);
-  const [fadeOpacity, setFadeOpacity] = useState(1); // start faded in, then reveal
+  const [fadeOpacity, setFadeOpacity] = useState(1);
   const [fadeVisible, setFadeVisible] = useState(true);
+  const [menuTab, setMenuTab] = useState<GameModeType>("classic");
 
   // Initial fade-in on mount
   useEffect(() => {
@@ -67,18 +70,16 @@ export default function MinesweeperGame() {
 
   const transitionTo = useCallback((callback: () => void) => {
     setFadeVisible(true);
-    setFadeOpacity(1); // fade to black
+    setFadeOpacity(1);
     transitionCallbackRef.current = callback;
   }, []);
 
-  // Handle fade completion
   useEffect(() => {
     if (fadeOpacity === 1 && fadeVisible && transitionCallbackRef.current) {
       const cb = transitionCallbackRef.current;
       transitionCallbackRef.current = null;
       const t = setTimeout(() => {
         cb();
-        // Fade back in
         requestAnimationFrame(() => {
           setFadeOpacity(0);
           setTimeout(() => setFadeVisible(false), FADE_DURATION);
@@ -95,7 +96,7 @@ export default function MinesweeperGame() {
     }
   }, []);
 
-  const startTimer = useCallback(() => {
+  const startClassicTimer = useCallback(() => {
     stopTimer();
     timerRef.current = 0;
     timerIntervalRef.current = setInterval(() => {
@@ -103,31 +104,38 @@ export default function MinesweeperGame() {
     }, 1000);
   }, [stopTimer]);
 
-  const startGame = useCallback(
-    (diff: Difficulty) => {
-      transitionTo(() => {
-        setDifficulty(diff);
-        engineRef.current = createEngine(diff.rows, diff.cols, diff.mines);
-        rendererRef.current = createRendererState();
-        timerRef.current = 0;
-        stopTimer();
-        setGameState("idle");
-        setScreen("game");
-      });
+  const initGame = useCallback(
+    (config: GameModeConfig) => {
+      setModeConfig(config);
+      gameModeRef.current = config;
+      engineRef.current = createEngine(config.rows, config.cols, config.mines);
+      rendererRef.current = createRendererState();
+      scoringRef.current = createScoringState();
+      timerRef.current = 0;
+      stopTimer();
+
+      if (config.type === "speed_demon") {
+        speedDemonRef.current = createSpeedDemonState(config);
+      } else {
+        speedDemonRef.current = null;
+      }
+
+      setGameState("idle");
+      setScreen("game");
     },
-    [stopTimer, transitionTo]
+    [stopTimer]
+  );
+
+  const startGame = useCallback(
+    (config: GameModeConfig) => {
+      transitionTo(() => initGame(config));
+    },
+    [transitionTo, initGame]
   );
 
   const restartGame = useCallback(() => {
-    transitionTo(() => {
-      engineRef.current = createEngine(difficulty.rows, difficulty.cols, difficulty.mines);
-      rendererRef.current = createRendererState();
-      timerRef.current = 0;
-      stopTimer();
-      setGameState("idle");
-      setScreen("game");
-    });
-  }, [difficulty, stopTimer, transitionTo]);
+    transitionTo(() => initGame(gameModeRef.current));
+  }, [transitionTo, initGame]);
 
   const goToMenu = useCallback(() => {
     transitionTo(() => {
@@ -140,7 +148,12 @@ export default function MinesweeperGame() {
     (state: GameState, mineRow?: number, mineCol?: number) => {
       stopTimer();
       setGameState(state);
-      setFinalTime(timerRef.current);
+      // Save time for results
+      if (speedDemonRef.current) {
+        setFinalTime(Math.round((gameModeRef.current.startTime - speedDemonRef.current.timeRemainingMs) / 1000));
+      } else {
+        setFinalTime(timerRef.current);
+      }
       if (engineRef.current && state === "lost") {
         revealAll(engineRef.current);
         triggerShake(rendererRef.current);
@@ -151,7 +164,6 @@ export default function MinesweeperGame() {
           spawnExplosion(r.particles, cx, cy, 25);
         }
       }
-      // Delay then transition to result
       setTimeout(() => {
         transitionTo(() => setScreen("result"));
       }, 1200);
@@ -162,34 +174,98 @@ export default function MinesweeperGame() {
   const handleCellAction = useCallback(
     (row: number, col: number, isFlag: boolean) => {
       if (!engineRef.current) return;
-      sound.init(); // init on first user interaction
+      sound.init();
       const engine = engineRef.current;
       if (engine.state === "won" || engine.state === "lost") return;
+
+      const config = gameModeRef.current;
+      const isSpeedDemon = config.type === "speed_demon";
 
       if (isFlag) {
         toggleFlag(engine, row, col);
         sound.playFlag();
       } else {
         const wasIdle = engine.state === "idle";
-        reveal(engine, row, col);
-        const postState = engine.state as GameState;
-        if (wasIdle && postState === "playing") {
-          startTimer();
+        const result = reveal(engine, row, col);
+        let postState = engine.state as GameState;
+
+        // Feed scoring
+        onReveal(scoringRef.current, result);
+
+        // Speed Demon: handle mine survival + time bonuses
+        if (isSpeedDemon && speedDemonRef.current) {
+          onSpeedDemonReveal(speedDemonRef.current, config, result.cellsRevealed, result.hitMine);
+
+          if (result.hitMine && config.surviveOnMine) {
+            // Don't die - override engine state back to playing
+            engine.state = "playing";
+            postState = "playing";
+            // Still show explosion effects
+            sound.playExplosion();
+            triggerShake(rendererRef.current, 6, 200);
+            const r = rendererRef.current;
+            const cx = r.offsetX + col * r.cellSize + r.cellSize / 2;
+            const cy = r.offsetY + row * r.cellSize + r.cellSize / 2;
+            spawnExplosion(r.particles, cx, cy, 15);
+            spawnPopup(r, cx, cy - r.cellSize, "-15s", "#ff3b3b", 1000);
+          }
+
+          // Check if time ran out
+          if (speedDemonRef.current.timeRemainingMs <= 0) {
+            engine.state = "lost";
+            postState = "lost";
+          }
         }
+
+        if (wasIdle && (postState === "playing")) {
+          if (isSpeedDemon) {
+            // Speed Demon uses RAF-based timer, no setInterval needed
+            // Timer starts ticking in the render loop
+          } else {
+            startClassicTimer();
+          }
+        }
+
         if (postState === "won") {
           sound.playVictory();
           handleGameEnd(postState, row, col);
         } else if (postState === "lost") {
-          sound.playExplosion();
-          sound.playGameOver();
+          if (!isSpeedDemon || !result.hitMine) {
+            // Only play game over if not a survived mine hit
+            sound.playExplosion();
+            sound.playGameOver();
+          }
           handleGameEnd(postState, row, col);
-        } else {
+        } else if (result.cellsRevealed > 0) {
           sound.playReveal();
+          // Score popup
+          const r = rendererRef.current;
+          const cx = r.offsetX + col * r.cellSize + r.cellSize / 2;
+          const cy = r.offsetY + row * r.cellSize;
+          const scoreDelta = result.cellsRevealed * scoringRef.current.comboMultiplier;
+          let popupText = `+${scoreDelta}`;
+          if (scoringRef.current.comboMultiplier > 1) {
+            popupText += ` x${scoringRef.current.comboMultiplier}`;
+          }
+          if (result.cellsRevealed >= 25) {
+            popupText += " ZONE!";
+            spawnPopup(r, cx, cy, popupText, "#00ff88", 1200);
+          } else if (result.cellsRevealed >= 9) {
+            popupText += " ZONE";
+            spawnPopup(r, cx, cy, popupText, "#3b8bff", 1000);
+          } else if (scoreDelta > 5) {
+            spawnPopup(r, cx, cy, popupText, "#ffd600");
+          }
+          // Speed Demon: show time bonus popup for big reveals
+          if (isSpeedDemon && result.cellsRevealed >= 5) {
+            const timeBonusStr = `+${(result.cellsRevealed * 0.5).toFixed(1)}s`;
+            spawnPopup(r, cx, cy - 20, timeBonusStr, "#00ff88", 600);
+          }
         }
       }
       setGameState(engine.state);
     },
-    [startTimer, handleGameEnd]
+    [startClassicTimer, handleGameEnd]
   );
 
   // Canvas rendering loop
@@ -221,11 +297,49 @@ export default function MinesweeperGame() {
     resize();
     window.addEventListener("resize", resize);
 
+    let lastTime = performance.now();
+
     const loop = () => {
+      const now = performance.now();
+      const dt = now - lastTime;
+      lastTime = now;
+
+      // Update Speed Demon timer
+      if (
+        speedDemonRef.current &&
+        engineRef.current?.state === "playing"
+      ) {
+        updateSpeedDemonTimer(speedDemonRef.current, dt);
+        if (speedDemonRef.current.timeRemainingMs <= 0) {
+          // Time's up!
+          if (engineRef.current) {
+            engineRef.current.state = "lost";
+            setGameState("lost");
+            sound.playGameOver();
+            handleGameEnd("lost");
+          }
+        }
+      }
+
       if (engineRef.current) {
         ctx.save();
         ctx.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
-        render(ctx, engineRef.current, rendererRef.current, timerRef.current, HUD_HEIGHT);
+
+        // Pass timer value depending on mode
+        const timerVal = speedDemonRef.current
+          ? speedDemonRef.current.timeRemainingMs
+          : timerRef.current;
+
+        render(
+          ctx,
+          engineRef.current,
+          rendererRef.current,
+          timerVal,
+          HUD_HEIGHT,
+          scoringRef.current,
+          gameModeRef.current,
+          speedDemonRef.current
+        );
         ctx.restore();
       }
       rafRef.current = requestAnimationFrame(loop);
@@ -237,7 +351,7 @@ export default function MinesweeperGame() {
       cancelAnimationFrame(rafRef.current);
       window.removeEventListener("resize", resize);
     };
-  }, [screen]);
+  }, [screen, handleGameEnd]);
 
   // Mouse events
   useEffect(() => {
@@ -342,12 +456,11 @@ export default function MinesweeperGame() {
     };
   }, [screen, handleCellAction]);
 
-  // Cleanup timer on unmount
   useEffect(() => {
     return () => stopTimer();
   }, [stopTimer]);
 
-  // Fade overlay (rendered on all screens)
+  // Fade overlay
   const fadeOverlay = fadeVisible ? (
     <div
       className="fixed inset-0 z-50 bg-[#0a0a0a] pointer-events-none"
@@ -364,12 +477,12 @@ export default function MinesweeperGame() {
       <>
         {fadeOverlay}
         <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0a] text-[#e8e8e8] select-none">
-          <div className="border-2 border-[#ff3b3b] p-12 max-w-lg w-full mx-4 text-center bg-[#111]">
+          <div className="border-2 border-[#ff3b3b] p-8 md:p-12 max-w-lg w-full mx-4 text-center bg-[#111]">
             <div className="text-[10px] tracking-[4px] text-[#ff3b3b] mb-6 uppercase font-mono">
               Minesweeper Xtreme
             </div>
             <h1
-              className="text-6xl md:text-8xl font-bold tracking-wider leading-none"
+              className="text-5xl md:text-7xl font-bold tracking-wider leading-none"
               style={{ fontFamily: "'Bebas Neue', sans-serif" }}
             >
               MINESWEEPER
@@ -377,24 +490,72 @@ export default function MinesweeperGame() {
                 XTREME
               </span>
             </h1>
-            <p className="text-[#666] text-sm mt-6 font-mono">
-              Choisis ta difficulte
-            </p>
-            <div className="flex flex-col gap-3 mt-8">
-              {DIFFICULTIES.map((diff) => (
-                <button
-                  key={diff.name}
-                  onClick={() => startGame(diff)}
-                  className="border border-[#2a2a2a] bg-[#1a1a1a] hover:border-[#ff3b3b] hover:bg-[#1f1111] text-[#e8e8e8] py-3 px-6 font-mono text-sm tracking-wider transition-colors cursor-pointer"
-                >
-                  {diff.name.toUpperCase()}
-                  <span className="text-[#666] ml-3">
-                    {diff.cols}x{diff.rows} — {diff.mines} mines
-                  </span>
-                </button>
-              ))}
+
+            {/* Mode tabs */}
+            <div className="flex gap-0 mt-8 border border-[#2a2a2a]">
+              <button
+                onClick={() => setMenuTab("classic")}
+                className={`flex-1 py-2 font-mono text-xs tracking-wider transition-colors cursor-pointer ${
+                  menuTab === "classic"
+                    ? "bg-[#1a1a1a] text-[#e8e8e8] border-b-2 border-b-[#e8e8e8]"
+                    : "bg-[#111] text-[#666] hover:text-[#999]"
+                }`}
+              >
+                CLASSIQUE
+              </button>
+              <button
+                onClick={() => setMenuTab("speed_demon")}
+                className={`flex-1 py-2 font-mono text-xs tracking-wider transition-colors cursor-pointer ${
+                  menuTab === "speed_demon"
+                    ? "bg-[#1a1a1a] text-[#ff3b3b] border-b-2 border-b-[#ff3b3b]"
+                    : "bg-[#111] text-[#666] hover:text-[#999]"
+                }`}
+              >
+                SPEED DEMON
+              </button>
             </div>
-            <div className="text-[10px] text-[#444] mt-8 font-mono tracking-wider">
+
+            {/* Mode content */}
+            <div className="flex flex-col gap-3 mt-6">
+              {menuTab === "classic" ? (
+                <>
+                  <p className="text-[#666] text-xs font-mono mb-2">
+                    Demineur classique. Revele toutes les cases sans toucher de mine.
+                  </p>
+                  {CLASSIC_DIFFICULTIES.map((config) => (
+                    <button
+                      key={config.name}
+                      onClick={() => startGame(config)}
+                      className="border border-[#2a2a2a] bg-[#1a1a1a] hover:border-[#e8e8e8] hover:bg-[#1f1f1f] text-[#e8e8e8] py-3 px-6 font-mono text-sm tracking-wider transition-colors cursor-pointer"
+                    >
+                      {config.name.toUpperCase()}
+                      <span className="text-[#666] ml-3">
+                        {config.cols}x{config.rows} — {config.mines} mines
+                      </span>
+                    </button>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <p className="text-[#666] text-xs font-mono mb-2">
+                    60 secondes. Chaque case safe = +0.5s. Chaque mine = -15s.
+                    <br />
+                    Score max avant que le timer atteigne zero.
+                  </p>
+                  <button
+                    onClick={() => startGame(SPEED_DEMON_CONFIG)}
+                    className="border border-[#ff3b3b] bg-[#1f1111] hover:bg-[#2a1111] text-[#ff3b3b] py-4 px-6 font-mono text-sm tracking-wider transition-colors cursor-pointer"
+                  >
+                    <span className="text-lg">⚡</span> LANCER SPEED DEMON
+                    <span className="text-[#666] ml-3 text-xs">
+                      30x30 — 150 mines — 60s
+                    </span>
+                  </button>
+                </>
+              )}
+            </div>
+
+            <div className="text-[10px] text-[#444] mt-6 font-mono tracking-wider">
               CLIC GAUCHE : REVELER &nbsp;|&nbsp; CLIC DROIT : DRAPEAU
               <br />
               MOBILE : TAP : REVELER &nbsp;|&nbsp; LONG PRESS : DRAPEAU
@@ -408,34 +569,64 @@ export default function MinesweeperGame() {
   // --- RESULT SCREEN ---
   if (screen === "result") {
     const won = gameState === "won";
+    const isSpeedDemon = modeConfig.type === "speed_demon";
+    const scoring = scoringRef.current;
     const minutes = Math.floor(finalTime / 60);
     const seconds = finalTime % 60;
+
     return (
       <>
         {fadeOverlay}
         <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0a] text-[#e8e8e8] select-none">
-          <div className="border-2 border-[#2a2a2a] p-12 max-w-lg w-full mx-4 text-center bg-[#111]">
+          <div className="border-2 border-[#2a2a2a] p-8 md:p-12 max-w-lg w-full mx-4 text-center bg-[#111]">
+            {isSpeedDemon && (
+              <div className="text-[10px] tracking-[4px] text-[#ff3b3b] mb-4 uppercase font-mono">
+                ⚡ Speed Demon
+              </div>
+            )}
             <h2
               className={`text-5xl md:text-7xl font-bold tracking-wider ${
                 won ? "text-[#00ff88]" : "text-[#ff3b3b]"
               }`}
               style={{ fontFamily: "'Bebas Neue', sans-serif" }}
             >
-              {won ? "VICTOIRE" : "DEFAITE"}
+              {won ? "VICTOIRE" : isSpeedDemon ? "TIME'S UP" : "DEFAITE"}
             </h2>
-            <div className="mt-8 space-y-4 font-mono text-sm">
+
+            {/* Score prominently */}
+            <div className="mt-6 mb-4">
+              <div className="text-[#666] text-xs font-mono tracking-wider">SCORE</div>
+              <div
+                className="text-4xl md:text-5xl text-[#ffd600] font-bold"
+                style={{ fontFamily: "'Bebas Neue', sans-serif" }}
+              >
+                {scoring.score.toLocaleString("fr-FR")}
+              </div>
+            </div>
+
+            <div className="mt-4 space-y-3 font-mono text-sm">
               <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                <span className="text-[#666]">Difficulte</span>
-                <span>{difficulty.name}</span>
+                <span className="text-[#666]">Mode</span>
+                <span>{modeConfig.name}</span>
               </div>
               <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
                 <span className="text-[#666]">Grille</span>
-                <span>{difficulty.cols}x{difficulty.rows}</span>
+                <span>{modeConfig.cols}x{modeConfig.rows}</span>
               </div>
               <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                <span className="text-[#666]">Mines</span>
-                <span>{difficulty.mines}</span>
+                <span className="text-[#666]">Cases revelees</span>
+                <span>{scoring.casesRevealed}</span>
               </div>
+              <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
+                <span className="text-[#666]">Meilleur combo</span>
+                <span className="text-[#ff6d00]">x{scoring.maxCombo > 0 ? Math.min(5, scoring.maxCombo >= 20 ? 5 : scoring.maxCombo >= 10 ? 3 : scoring.maxCombo >= 5 ? 2 : 1) : 1}</span>
+              </div>
+              {isSpeedDemon && speedDemonRef.current && (
+                <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
+                  <span className="text-[#666]">Mines touchees</span>
+                  <span className="text-[#ff3b3b]">{speedDemonRef.current.minesHit}</span>
+                </div>
+              )}
               <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
                 <span className="text-[#666]">Temps</span>
                 <span>
@@ -443,6 +634,7 @@ export default function MinesweeperGame() {
                 </span>
               </div>
             </div>
+
             <div className="flex flex-col gap-3 mt-8">
               <button
                 onClick={restartGame}

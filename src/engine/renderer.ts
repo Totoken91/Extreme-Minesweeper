@@ -1,5 +1,7 @@
 import { MinesweeperEngine, CellState } from "./minesweeper";
 import { ParticleSystem, updateParticles, drawParticles } from "./particles";
+import { ScoringState, formatScore } from "./scoring";
+import { GameModeConfig, SpeedDemonState, formatTimeMsDecimal } from "./gamemode";
 
 const NUMBER_COLORS: Record<number, string> = {
   1: "#3b8bff",
@@ -26,6 +28,15 @@ const DECODE_DURATION = 150; // ms - terminal decode effect
 const DECODE_CHARS = "0123456789#@$%&!?*><[]{}";
 const DECODE_COLOR = "#00ff88"; // terminal green
 
+export interface ScorePopup {
+  x: number;
+  y: number;
+  text: string;
+  color: string;
+  spawnTime: number;
+  duration: number;
+}
+
 export interface RendererState {
   cellSize: number;
   offsetX: number;
@@ -37,6 +48,7 @@ export interface RendererState {
   shakeIntensity: number;
   particles: ParticleSystem;
   lastFrameTime: number;
+  popups: ScorePopup[];
 }
 
 export function createRendererState(): RendererState {
@@ -51,7 +63,42 @@ export function createRendererState(): RendererState {
     shakeIntensity: 8,
     particles: { particles: [] },
     lastFrameTime: 0,
+    popups: [],
   };
+}
+
+export function spawnPopup(
+  renderer: RendererState,
+  x: number,
+  y: number,
+  text: string,
+  color: string = "#ffd600",
+  duration: number = 800
+): void {
+  renderer.popups.push({ x, y, text, color, spawnTime: performance.now(), duration });
+}
+
+function drawPopups(ctx: CanvasRenderingContext2D, popups: ScorePopup[], now: number): void {
+  for (let i = popups.length - 1; i >= 0; i--) {
+    const p = popups[i];
+    const elapsed = now - p.spawnTime;
+    if (elapsed > p.duration) {
+      popups.splice(i, 1);
+      continue;
+    }
+    const progress = elapsed / p.duration;
+    const alpha = 1 - progress;
+    const offsetY = -30 * progress; // float upward
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = p.color;
+    ctx.font = "bold 16px 'Space Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(p.text, p.x, p.y + offsetY);
+    ctx.restore();
+  }
 }
 
 export function triggerShake(
@@ -113,7 +160,10 @@ export function render(
   engine: MinesweeperEngine,
   renderer: RendererState,
   timer: number,
-  hudHeight: number
+  hudHeight: number,
+  scoring?: ScoringState,
+  modeConfig?: GameModeConfig,
+  speedDemon?: SpeedDemonState | null
 ): void {
   const { width, height } = ctx.canvas;
   const now = performance.now();
@@ -145,9 +195,10 @@ export function render(
   ctx.save();
   ctx.translate(shakeX, shakeY);
 
-  drawHUD(ctx, engine, timer, hudHeight);
+  drawHUD(ctx, engine, timer, hudHeight, scoring, modeConfig, speedDemon);
   drawGrid(ctx, engine, renderer, now);
   drawParticles(ctx, renderer.particles);
+  drawPopups(ctx, renderer.popups, now);
 
   ctx.restore();
 }
@@ -156,9 +207,14 @@ function drawHUD(
   ctx: CanvasRenderingContext2D,
   engine: MinesweeperEngine,
   timer: number,
-  hudHeight: number
+  hudHeight: number,
+  scoring?: ScoringState,
+  modeConfig?: GameModeConfig,
+  speedDemon?: SpeedDemonState | null
 ): void {
   const w = ctx.canvas.width;
+  const dpr = window.devicePixelRatio || 1;
+  const logicalW = w / dpr;
 
   // HUD background
   ctx.fillStyle = "#111111";
@@ -173,37 +229,73 @@ function drawHUD(
   const midY = hudHeight / 2;
   ctx.textBaseline = "middle";
 
-  // Mines remaining
+  // Left section: Mines remaining
   const minesLeft = engine.totalMines - engine.flagCount;
   ctx.fillStyle = MINE_COLOR;
-  ctx.font = "bold 20px 'Space Mono', monospace";
+  ctx.font = "bold 16px 'Space Mono', monospace";
   ctx.textAlign = "left";
-  ctx.fillText(`💣 ${minesLeft}`, 20, midY);
+  ctx.fillText(`💣 ${minesLeft}`, 16, midY);
 
-  // Timer
-  const minutes = Math.floor(timer / 60);
-  const seconds = timer % 60;
-  const timeStr = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
-  ctx.fillStyle = "#e8e8e8";
-  ctx.font = "bold 24px 'Space Mono', monospace";
-  ctx.textAlign = "center";
-  ctx.fillText(timeStr, w / 2, midY);
+  // Center: Timer
+  const isSpeedDemon = modeConfig?.type === "speed_demon" && speedDemon;
+  if (isSpeedDemon && speedDemon) {
+    const timeStr = formatTimeMsDecimal(speedDemon.timeRemainingMs);
+    // Color changes based on remaining time
+    const pct = speedDemon.timeRemainingMs / (modeConfig?.startTime || 60000);
+    if (pct < 0.15) {
+      ctx.fillStyle = "#ff3b3b";
+    } else if (pct < 0.33) {
+      ctx.fillStyle = "#ff6d00";
+    } else {
+      ctx.fillStyle = "#ffd600";
+    }
+    ctx.font = "bold 22px 'Space Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(timeStr, logicalW / 2, midY);
 
-  // State indicator
-  let stateText = "";
-  let stateColor = "#666";
-  if (engine.state === "won") {
-    stateText = "VICTORY";
-    stateColor = "#00ff88";
-  } else if (engine.state === "lost") {
-    stateText = "DEFEAT";
-    stateColor = MINE_COLOR;
+    // Speed indicator
+    if (speedDemon.timerSpeed > 1) {
+      ctx.fillStyle = "#ff3b3b";
+      ctx.font = "10px 'Space Mono', monospace";
+      ctx.fillText(`x${speedDemon.timerSpeed.toFixed(1)}`, logicalW / 2 + 60, midY);
+    }
+  } else {
+    const minutes = Math.floor(timer / 60);
+    const seconds = timer % 60;
+    const timeStr = `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+    ctx.fillStyle = "#e8e8e8";
+    ctx.font = "bold 20px 'Space Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(timeStr, logicalW / 2, midY);
   }
-  if (stateText) {
-    ctx.fillStyle = stateColor;
-    ctx.font = "bold 18px 'Space Mono', monospace";
+
+  // Right section: Score + Combo
+  if (scoring) {
+    // Score
+    ctx.fillStyle = "#ffd600";
+    ctx.font = "bold 16px 'Space Mono', monospace";
     ctx.textAlign = "right";
-    ctx.fillText(stateText, w - 20, midY);
+    ctx.fillText(formatScore(scoring.score), logicalW - 16, midY - 10);
+
+    // Combo
+    if (scoring.comboMultiplier > 1) {
+      const comboColors = ["", "", "#3b8bff", "#ff6d00", "", "#ff3b3b"];
+      const color = comboColors[scoring.comboMultiplier] || "#ff3b3b";
+      ctx.fillStyle = color;
+      ctx.font = "bold 14px 'Space Mono', monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(`x${scoring.comboMultiplier} 🔥`, logicalW - 16, midY + 12);
+    }
+  }
+
+  // State indicator (centered below timer area when game over)
+  if (engine.state === "won" || engine.state === "lost") {
+    const stateText = engine.state === "won" ? "VICTORY" : "DEFEAT";
+    const stateColor = engine.state === "won" ? "#00ff88" : MINE_COLOR;
+    ctx.fillStyle = stateColor;
+    ctx.font = "bold 14px 'Space Mono', monospace";
+    ctx.textAlign = "center";
+    ctx.fillText(stateText, logicalW / 2, midY + 14);
   }
 }
 

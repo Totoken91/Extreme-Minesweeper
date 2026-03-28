@@ -102,7 +102,7 @@ function placeMines(
   }
 }
 
-function floodFill(engine: MinesweeperEngine, row: number, col: number): void {
+function floodFill(engine: MinesweeperEngine, row: number, col: number): number {
   const { grid, rows, cols } = engine;
   const now = performance.now();
   // BFS instead of stack for better cascade ordering (closest cells first)
@@ -128,17 +128,24 @@ function floodFill(engine: MinesweeperEngine, row: number, col: number): void {
       }
     }
   }
+
+  return order; // number of cells revealed
+}
+
+export interface RevealResult {
+  cellsRevealed: number;
+  hitMine: boolean;
 }
 
 export function reveal(
   engine: MinesweeperEngine,
   row: number,
   col: number
-): MinesweeperEngine {
-  if (engine.state === "won" || engine.state === "lost") return engine;
+): RevealResult {
+  if (engine.state === "won" || engine.state === "lost") return { cellsRevealed: 0, hitMine: false };
 
   const cell = engine.grid[row][col];
-  if (cell.revealed || cell.flagged) return engine;
+  if (cell.revealed || cell.flagged) return { cellsRevealed: 0, hitMine: false };
 
   // First click: place mines
   if (engine.state === "idle") {
@@ -150,10 +157,10 @@ export function reveal(
     cell.revealed = true;
     cell.revealedAt = performance.now();
     engine.state = "lost";
-    return engine;
+    return { cellsRevealed: 0, hitMine: true };
   }
 
-  floodFill(engine, row, col);
+  const count = floodFill(engine, row, col);
 
   // Check win: all non-mine cells revealed
   const totalSafe = engine.rows * engine.cols - engine.totalMines;
@@ -161,7 +168,7 @@ export function reveal(
     engine.state = "won";
   }
 
-  return engine;
+  return { cellsRevealed: count, hitMine: false };
 }
 
 export function toggleFlag(
