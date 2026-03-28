@@ -3,6 +3,7 @@ export type CellState = {
   revealed: boolean;
   flagged: boolean;
   adjacentMines: number;
+  revealedAt: number; // performance.now() timestamp, 0 = not yet revealed
 };
 
 export type GameState = "idle" | "playing" | "won" | "lost";
@@ -30,6 +31,7 @@ export function createEngine(
       revealed: false,
       flagged: false,
       adjacentMines: 0,
+      revealedAt: 0,
     }))
   );
 
@@ -102,21 +104,26 @@ function placeMines(
 
 function floodFill(engine: MinesweeperEngine, row: number, col: number): void {
   const { grid, rows, cols } = engine;
-  const stack: [number, number][] = [[row, col]];
+  const now = performance.now();
+  // BFS instead of stack for better cascade ordering (closest cells first)
+  const queue: [number, number][] = [[row, col]];
+  let order = 0;
 
-  while (stack.length > 0) {
-    const [r, c] = stack.pop()!;
+  while (queue.length > 0) {
+    const [r, c] = queue.shift()!;
     if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
     const cell = grid[r][c];
     if (cell.revealed || cell.flagged || cell.mine) continue;
 
     cell.revealed = true;
+    cell.revealedAt = now + order * 25; // 25ms stagger for cascade effect
     engine.revealedCount++;
+    order++;
 
     if (cell.adjacentMines === 0) {
       for (const [nr, nc] of getNeighbors(r, c, rows, cols)) {
         if (!grid[nr][nc].revealed) {
-          stack.push([nr, nc]);
+          queue.push([nr, nc]);
         }
       }
     }
@@ -141,6 +148,7 @@ export function reveal(
 
   if (cell.mine) {
     cell.revealed = true;
+    cell.revealedAt = performance.now();
     engine.state = "lost";
     return engine;
   }

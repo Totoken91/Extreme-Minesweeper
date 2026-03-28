@@ -1,4 +1,5 @@
 import { MinesweeperEngine, CellState } from "./minesweeper";
+import { ParticleSystem, updateParticles, drawParticles } from "./particles";
 
 const NUMBER_COLORS: Record<number, string> = {
   1: "#3b8bff",
@@ -20,12 +21,22 @@ const FLAG_COLOR = "#ffd600";
 const MINE_COLOR = "#ff3b3b";
 const BG_COLOR = "#0a0a0a";
 
+const REVEAL_ANIM_DURATION = 200; // ms
+const DECODE_DURATION = 150; // ms - terminal decode effect
+const DECODE_CHARS = "0123456789#@$%&!?*><[]{}";
+const DECODE_COLOR = "#00ff88"; // terminal green
+
 export interface RendererState {
   cellSize: number;
   offsetX: number;
   offsetY: number;
   hoverRow: number;
   hoverCol: number;
+  shakeStartTime: number;
+  shakeDuration: number;
+  shakeIntensity: number;
+  particles: ParticleSystem;
+  lastFrameTime: number;
 }
 
 export function createRendererState(): RendererState {
@@ -35,7 +46,22 @@ export function createRendererState(): RendererState {
     offsetY: 0,
     hoverRow: -1,
     hoverCol: -1,
+    shakeStartTime: 0,
+    shakeDuration: 300,
+    shakeIntensity: 8,
+    particles: { particles: [] },
+    lastFrameTime: 0,
   };
+}
+
+export function triggerShake(
+  renderer: RendererState,
+  intensity = 8,
+  duration = 300
+): void {
+  renderer.shakeStartTime = performance.now();
+  renderer.shakeIntensity = intensity;
+  renderer.shakeDuration = duration;
 }
 
 export function calculateLayout(
@@ -71,6 +97,17 @@ export function screenToGrid(
   return [row, col];
 }
 
+// easeOutBack: slight overshoot then settle
+function easeOutBack(t: number): number {
+  const c1 = 1.70158;
+  const c3 = c1 + 1;
+  return 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return v < min ? min : v > max ? max : v;
+}
+
 export function render(
   ctx: CanvasRenderingContext2D,
   engine: MinesweeperEngine,
@@ -79,12 +116,40 @@ export function render(
   hudHeight: number
 ): void {
   const { width, height } = ctx.canvas;
+  const now = performance.now();
+
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = BG_COLOR;
   ctx.fillRect(0, 0, width, height);
 
+  // Apply screen shake
+  let shakeX = 0;
+  let shakeY = 0;
+  if (renderer.shakeStartTime > 0) {
+    const elapsed = now - renderer.shakeStartTime;
+    if (elapsed < renderer.shakeDuration) {
+      const progress = elapsed / renderer.shakeDuration;
+      const amplitude = renderer.shakeIntensity * (1 - progress);
+      shakeX = (Math.random() * 2 - 1) * amplitude;
+      shakeY = (Math.random() * 2 - 1) * amplitude;
+    } else {
+      renderer.shakeStartTime = 0;
+    }
+  }
+
+  // Update particles
+  const dt = renderer.lastFrameTime > 0 ? now - renderer.lastFrameTime : 16;
+  renderer.lastFrameTime = now;
+  updateParticles(renderer.particles, dt);
+
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
   drawHUD(ctx, engine, timer, hudHeight);
-  drawGrid(ctx, engine, renderer);
+  drawGrid(ctx, engine, renderer, now);
+  drawParticles(ctx, renderer.particles);
+
+  ctx.restore();
 }
 
 function drawHUD(
@@ -145,7 +210,8 @@ function drawHUD(
 function drawGrid(
   ctx: CanvasRenderingContext2D,
   engine: MinesweeperEngine,
-  renderer: RendererState
+  renderer: RendererState,
+  now: number
 ): void {
   const { cellSize, offsetX, offsetY } = renderer;
   const { grid, rows, cols } = engine;
@@ -162,7 +228,7 @@ function drawGrid(
         !cell.flagged &&
         (engine.state === "playing" || engine.state === "idle");
 
-      drawCell(ctx, cell, x, y, cellSize, isHover, engine.state === "lost");
+      drawCell(ctx, cell, x, y, cellSize, isHover, engine.state === "lost", now);
     }
   }
 }
@@ -174,36 +240,80 @@ function drawCell(
   y: number,
   size: number,
   isHover: boolean,
-  isGameOver: boolean
+  isGameOver: boolean,
+  now: number
 ): void {
   const padding = 1;
 
   if (cell.revealed) {
+    // Calculate animation progress
+    const animProgress = cell.revealedAt > 0
+      ? clamp((now - cell.revealedAt) / REVEAL_ANIM_DURATION, 0, 1)
+      : 1;
+
+    // If animation hasn't started yet (future timestamp from cascade), draw as hidden
+    if (cell.revealedAt > now) {
+      ctx.fillStyle = CELL_HIDDEN;
+      ctx.fillRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
+      ctx.strokeStyle = CELL_BORDER;
+      ctx.lineWidth = 0.5;
+      ctx.strokeRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
+      return;
+    }
+
+    const easedProgress = easeOutBack(animProgress);
+    const scale = 0.3 + 0.7 * easedProgress; // scale from 0.3 to 1.0
+
+    // Draw with animation
+    ctx.save();
+    ctx.globalAlpha = clamp(animProgress * 1.5, 0, 1); // fade in faster than scale
+
+    const cx = x + size / 2;
+    const cy = y + size / 2;
+    ctx.translate(cx, cy);
+    ctx.scale(scale, scale);
+    ctx.translate(-cx, -cy);
+
     if (cell.mine) {
       ctx.fillStyle = CELL_MINE_EXPLODED;
       ctx.fillRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
-      // Draw mine
       ctx.fillStyle = MINE_COLOR;
       ctx.font = `${Math.floor(size * 0.55)}px serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("💣", x + size / 2, y + size / 2);
+      ctx.fillText("💣", cx, cy);
     } else {
       ctx.fillStyle = CELL_REVEALED;
       ctx.fillRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
 
       if (cell.adjacentMines > 0) {
-        ctx.fillStyle = NUMBER_COLORS[cell.adjacentMines] || "#ffffff";
-        ctx.font = `bold ${Math.floor(size * 0.55)}px 'Space Mono', monospace`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(
-          String(cell.adjacentMines),
-          x + size / 2,
-          y + size / 2 + 1
-        );
+        const timeSinceReveal = now - cell.revealedAt;
+        const isDecoding = cell.revealedAt > 0 && timeSinceReveal < DECODE_DURATION;
+
+        if (isDecoding) {
+          // Terminal decode effect: show random chars in green
+          const charIndex = Math.floor(now / 40) % DECODE_CHARS.length;
+          ctx.fillStyle = DECODE_COLOR;
+          ctx.font = `bold ${Math.floor(size * 0.55)}px 'Space Mono', monospace`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(DECODE_CHARS[charIndex], cx, cy + 1);
+        } else {
+          ctx.fillStyle = NUMBER_COLORS[cell.adjacentMines] || "#ffffff";
+          ctx.font = `bold ${Math.floor(size * 0.55)}px 'Space Mono', monospace`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(String(cell.adjacentMines), cx, cy + 1);
+        }
       }
     }
+
+    // Border
+    ctx.strokeStyle = CELL_BORDER;
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
+
+    ctx.restore();
   } else if (cell.flagged) {
     ctx.fillStyle = CELL_HIDDEN;
     ctx.fillRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
@@ -225,6 +335,10 @@ function drawCell(
       ctx.lineTo(x + inset, y + size - inset);
       ctx.stroke();
     }
+
+    ctx.strokeStyle = CELL_BORDER;
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
   } else {
     // Hidden cell
     ctx.fillStyle = isHover ? CELL_HIDDEN_HOVER : CELL_HIDDEN;
@@ -238,10 +352,9 @@ function drawCell(
       ctx.textBaseline = "middle";
       ctx.fillText("💣", x + size / 2, y + size / 2);
     }
-  }
 
-  // Border
-  ctx.strokeStyle = CELL_BORDER;
-  ctx.lineWidth = 0.5;
-  ctx.strokeRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
+    ctx.strokeStyle = CELL_BORDER;
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(x + padding, y + padding, size - padding * 2, size - padding * 2);
+  }
 }
