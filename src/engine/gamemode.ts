@@ -7,18 +7,19 @@ export interface GameModeConfig {
   cols: number;
   mines: number;
   // Speed Demon specific
-  countdown: boolean; // true = timer counts down, false = counts up
-  startTime: number; // starting time in ms (60000 for Speed Demon)
-  timePerSafeCell: number; // ms added per safe cell revealed (+500)
-  timePenaltyMine: number; // ms removed on mine hit (-15000)
-  surviveOnMine: boolean; // true = don't die on mine, just lose time
-  timerAcceleration: number; // every N cells, timer ticks faster (100 for Speed Demon)
+  countdown: boolean;
+  startTime: number; // starting time in ms
+  timePerSafeCell: number; // ms added per safe cell revealed
+  maxTimeBonusPerClick: number; // max ms gained per single click (caps flood fill bonus)
+  timePenaltyMine: number; // ms removed on mine hit
+  surviveOnMine: boolean;
+  timerAcceleration: number; // every N cells, timer ticks faster
 }
 
 export const CLASSIC_DIFFICULTIES: GameModeConfig[] = [
-  { type: "classic", name: "Facile", rows: 9, cols: 9, mines: 10, countdown: false, startTime: 0, timePerSafeCell: 0, timePenaltyMine: 0, surviveOnMine: false, timerAcceleration: 0 },
-  { type: "classic", name: "Moyen", rows: 16, cols: 16, mines: 40, countdown: false, startTime: 0, timePerSafeCell: 0, timePenaltyMine: 0, surviveOnMine: false, timerAcceleration: 0 },
-  { type: "classic", name: "Difficile", rows: 16, cols: 30, mines: 99, countdown: false, startTime: 0, timePerSafeCell: 0, timePenaltyMine: 0, surviveOnMine: false, timerAcceleration: 0 },
+  { type: "classic", name: "Facile", rows: 9, cols: 9, mines: 10, countdown: false, startTime: 0, timePerSafeCell: 0, maxTimeBonusPerClick: 0, timePenaltyMine: 0, surviveOnMine: false, timerAcceleration: 0 },
+  { type: "classic", name: "Moyen", rows: 16, cols: 16, mines: 40, countdown: false, startTime: 0, timePerSafeCell: 0, maxTimeBonusPerClick: 0, timePenaltyMine: 0, surviveOnMine: false, timerAcceleration: 0 },
+  { type: "classic", name: "Difficile", rows: 16, cols: 30, mines: 99, countdown: false, startTime: 0, timePerSafeCell: 0, maxTimeBonusPerClick: 0, timePenaltyMine: 0, surviveOnMine: false, timerAcceleration: 0 },
 ];
 
 export const SPEED_DEMON_CONFIG: GameModeConfig = {
@@ -26,13 +27,14 @@ export const SPEED_DEMON_CONFIG: GameModeConfig = {
   name: "Speed Demon",
   rows: 30,
   cols: 30,
-  mines: 150, // ~16.7% density on 30x30
+  mines: 200, // ~22% density — less empty space, harder to spam
   countdown: true,
   startTime: 60000, // 60 seconds
   timePerSafeCell: 500, // +0.5s per safe cell
-  timePenaltyMine: 15000, // -15s per mine
-  surviveOnMine: true, // don't die, just lose time
-  timerAcceleration: 100, // every 100 cells, timer ticks faster
+  maxTimeBonusPerClick: 3000, // cap at +3s per click (flood fill capped)
+  timePenaltyMine: 20000, // -20s per mine (was -15s)
+  surviveOnMine: true,
+  timerAcceleration: 100,
 };
 
 export interface SpeedDemonState {
@@ -69,15 +71,24 @@ export function onSpeedDemonReveal(
     return;
   }
 
-  // Add time for safe cells
-  state.timeRemainingMs += cellsRevealed * config.timePerSafeCell;
+  // Add time for safe cells (capped per click)
+  const rawBonus = cellsRevealed * config.timePerSafeCell;
+  const cappedBonus = config.maxTimeBonusPerClick > 0
+    ? Math.min(rawBonus, config.maxTimeBonusPerClick)
+    : rawBonus;
+  state.timeRemainingMs += cappedBonus;
+
+  // Cap timer at startTime — can't stockpile beyond initial time
+  if (state.timeRemainingMs > config.startTime) {
+    state.timeRemainingMs = config.startTime;
+  }
 
   // Check acceleration
   state.cellsForAcceleration += cellsRevealed;
   if (config.timerAcceleration > 0) {
     while (state.cellsForAcceleration >= config.timerAcceleration) {
       state.cellsForAcceleration -= config.timerAcceleration;
-      state.timerSpeed += 0.15; // timer ticks 15% faster each milestone
+      state.timerSpeed += 0.15;
     }
   }
 }

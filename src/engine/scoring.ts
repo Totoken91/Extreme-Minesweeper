@@ -98,6 +98,12 @@ export function onReveal(
   scoring.lastClickTime = now;
 }
 
+export function onMinePenalty(scoring: ScoringState): number {
+  const lost = Math.floor(scoring.score * 0.2);
+  scoring.score -= lost;
+  return lost;
+}
+
 export function formatScore(score: number): string {
   return score.toLocaleString("fr-FR");
 }

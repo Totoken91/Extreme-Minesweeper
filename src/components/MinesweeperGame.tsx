@@ -20,7 +20,7 @@ import {
 } from "@/engine/renderer";
 import { spawnExplosion } from "@/engine/particles";
 import { sound } from "@/engine/audio";
-import { createScoringState, onReveal, ScoringState } from "@/engine/scoring";
+import { createScoringState, onReveal, onMinePenalty, ScoringState } from "@/engine/scoring";
 import {
   GameModeConfig,
   GameModeType,
@@ -207,7 +207,12 @@ export default function MinesweeperGame() {
             const cx = r.offsetX + col * r.cellSize + r.cellSize / 2;
             const cy = r.offsetY + row * r.cellSize + r.cellSize / 2;
             spawnExplosion(r.particles, cx, cy, 15);
-            spawnPopup(r, cx, cy - r.cellSize, "-15s", "#ff3b3b", 1000);
+            spawnPopup(r, cx, cy - r.cellSize, "-20s", "#ff3b3b", 1000);
+            // Score penalty: lose 20% of current score
+            const lost = onMinePenalty(scoringRef.current);
+            if (lost > 0) {
+              spawnPopup(r, cx, cy - r.cellSize * 2, `-${lost} pts`, "#ff6d00", 1000);
+            }
           }
 
           // Check if time ran out
@@ -538,7 +543,7 @@ export default function MinesweeperGame() {
               ) : (
                 <>
                   <p className="text-[#666] text-xs font-mono mb-2">
-                    60 secondes. Chaque case safe = +0.5s. Chaque mine = -15s.
+                    60 secondes. +0.5s/case (max +3s/clic). Mine = -20s et -20% score.
                     <br />
                     Score max avant que le timer atteigne zero.
                   </p>
@@ -548,7 +553,7 @@ export default function MinesweeperGame() {
                   >
                     <span className="text-lg">⚡</span> LANCER SPEED DEMON
                     <span className="text-[#666] ml-3 text-xs">
-                      30x30 — 150 mines — 60s
+                      30x30 — 200 mines — 60s
                     </span>
                   </button>
                 </>
