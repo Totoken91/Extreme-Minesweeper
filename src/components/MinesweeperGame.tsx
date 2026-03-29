@@ -21,11 +21,11 @@ import {
 import { spawnExplosion } from "@/engine/particles";
 import { sound } from "@/engine/audio";
 import { createScoringState, onReveal, onMinePenalty, ScoringState } from "@/engine/scoring";
+import MenuScreen from "./MenuScreen";
+import ResultScreen from "./ResultScreen";
 import {
   GameModeConfig,
-  GameModeType,
   CLASSIC_DIFFICULTIES,
-  SPEED_DEMON_CONFIG,
   SpeedDemonState,
   createSpeedDemonState,
   updateSpeedDemonTimer,
@@ -57,7 +57,6 @@ export default function MinesweeperGame() {
   const [finalTime, setFinalTime] = useState(0);
   const [fadeOpacity, setFadeOpacity] = useState(1);
   const [fadeVisible, setFadeVisible] = useState(true);
-  const [menuTab, setMenuTab] = useState<GameModeType>("classic");
 
   // Initial fade-in on mount
   useEffect(() => {
@@ -481,181 +480,25 @@ export default function MinesweeperGame() {
     return (
       <>
         {fadeOverlay}
-        <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0a] text-[#e8e8e8] select-none">
-          <div className="border-2 border-[#ff3b3b] p-8 md:p-12 max-w-lg w-full mx-4 text-center bg-[#111]">
-            <div className="text-[10px] tracking-[4px] text-[#ff3b3b] mb-6 uppercase font-mono">
-              Minesweeper Xtreme
-            </div>
-            <h1
-              className="text-5xl md:text-7xl font-bold tracking-wider leading-none"
-              style={{ fontFamily: "'Bebas Neue', sans-serif" }}
-            >
-              MINESWEEPER
-              <span className="block text-2xl md:text-3xl tracking-[12px] text-[#ff3b3b] mt-2">
-                XTREME
-              </span>
-            </h1>
-
-            {/* Mode tabs */}
-            <div className="flex gap-0 mt-8 border border-[#2a2a2a]">
-              <button
-                onClick={() => setMenuTab("classic")}
-                className={`flex-1 py-2 font-mono text-xs tracking-wider transition-colors cursor-pointer ${
-                  menuTab === "classic"
-                    ? "bg-[#1a1a1a] text-[#e8e8e8] border-b-2 border-b-[#e8e8e8]"
-                    : "bg-[#111] text-[#666] hover:text-[#999]"
-                }`}
-              >
-                CLASSIQUE
-              </button>
-              <button
-                onClick={() => setMenuTab("speed_demon")}
-                className={`flex-1 py-2 font-mono text-xs tracking-wider transition-colors cursor-pointer ${
-                  menuTab === "speed_demon"
-                    ? "bg-[#1a1a1a] text-[#ff3b3b] border-b-2 border-b-[#ff3b3b]"
-                    : "bg-[#111] text-[#666] hover:text-[#999]"
-                }`}
-              >
-                SPEED DEMON
-              </button>
-            </div>
-
-            {/* Mode content */}
-            <div className="flex flex-col gap-3 mt-6">
-              {menuTab === "classic" ? (
-                <>
-                  <p className="text-[#666] text-xs font-mono mb-2">
-                    Demineur classique. Revele toutes les cases sans toucher de mine.
-                  </p>
-                  {CLASSIC_DIFFICULTIES.map((config) => (
-                    <button
-                      key={config.name}
-                      onClick={() => startGame(config)}
-                      className="border border-[#2a2a2a] bg-[#1a1a1a] hover:border-[#e8e8e8] hover:bg-[#1f1f1f] text-[#e8e8e8] py-3 px-6 font-mono text-sm tracking-wider transition-colors cursor-pointer"
-                    >
-                      {config.name.toUpperCase()}
-                      <span className="text-[#666] ml-3">
-                        {config.cols}x{config.rows} — {config.mines} mines
-                      </span>
-                    </button>
-                  ))}
-                </>
-              ) : (
-                <>
-                  <p className="text-[#666] text-xs font-mono mb-2">
-                    60 secondes. +0.5s/case (max +3s/clic). Mine = -20s et -20% score.
-                    <br />
-                    Score max avant que le timer atteigne zero.
-                  </p>
-                  <button
-                    onClick={() => startGame(SPEED_DEMON_CONFIG)}
-                    className="border border-[#ff3b3b] bg-[#1f1111] hover:bg-[#2a1111] text-[#ff3b3b] py-4 px-6 font-mono text-sm tracking-wider transition-colors cursor-pointer"
-                  >
-                    <span className="text-lg">⚡</span> LANCER SPEED DEMON
-                    <span className="text-[#666] ml-3 text-xs">
-                      30x30 — 200 mines — 60s
-                    </span>
-                  </button>
-                </>
-              )}
-            </div>
-
-            <div className="text-[10px] text-[#444] mt-6 font-mono tracking-wider">
-              CLIC GAUCHE : REVELER &nbsp;|&nbsp; CLIC DROIT : DRAPEAU
-              <br />
-              MOBILE : TAP : REVELER &nbsp;|&nbsp; LONG PRESS : DRAPEAU
-            </div>
-          </div>
-        </div>
+        <MenuScreen onStartGame={startGame} />
       </>
     );
   }
 
   // --- RESULT SCREEN ---
   if (screen === "result") {
-    const won = gameState === "won";
-    const isSpeedDemon = modeConfig.type === "speed_demon";
-    const scoring = scoringRef.current;
-    const minutes = Math.floor(finalTime / 60);
-    const seconds = finalTime % 60;
-
     return (
       <>
         {fadeOverlay}
-        <div className="flex flex-col items-center justify-center min-h-screen bg-[#0a0a0a] text-[#e8e8e8] select-none">
-          <div className="border-2 border-[#2a2a2a] p-8 md:p-12 max-w-lg w-full mx-4 text-center bg-[#111]">
-            {isSpeedDemon && (
-              <div className="text-[10px] tracking-[4px] text-[#ff3b3b] mb-4 uppercase font-mono">
-                ⚡ Speed Demon
-              </div>
-            )}
-            <h2
-              className={`text-5xl md:text-7xl font-bold tracking-wider ${
-                won ? "text-[#00ff88]" : "text-[#ff3b3b]"
-              }`}
-              style={{ fontFamily: "'Bebas Neue', sans-serif" }}
-            >
-              {won ? "VICTOIRE" : isSpeedDemon ? "TIME'S UP" : "DEFAITE"}
-            </h2>
-
-            {/* Score prominently */}
-            <div className="mt-6 mb-4">
-              <div className="text-[#666] text-xs font-mono tracking-wider">SCORE</div>
-              <div
-                className="text-4xl md:text-5xl text-[#ffd600] font-bold"
-                style={{ fontFamily: "'Bebas Neue', sans-serif" }}
-              >
-                {scoring.score.toLocaleString("fr-FR")}
-              </div>
-            </div>
-
-            <div className="mt-4 space-y-3 font-mono text-sm">
-              <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                <span className="text-[#666]">Mode</span>
-                <span>{modeConfig.name}</span>
-              </div>
-              <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                <span className="text-[#666]">Grille</span>
-                <span>{modeConfig.cols}x{modeConfig.rows}</span>
-              </div>
-              <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                <span className="text-[#666]">Cases revelees</span>
-                <span>{scoring.casesRevealed}</span>
-              </div>
-              <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                <span className="text-[#666]">Meilleur combo</span>
-                <span className="text-[#ff6d00]">x{scoring.maxCombo > 0 ? Math.min(5, scoring.maxCombo >= 20 ? 5 : scoring.maxCombo >= 10 ? 3 : scoring.maxCombo >= 5 ? 2 : 1) : 1}</span>
-              </div>
-              {isSpeedDemon && speedDemonRef.current && (
-                <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                  <span className="text-[#666]">Mines touchees</span>
-                  <span className="text-[#ff3b3b]">{speedDemonRef.current.minesHit}</span>
-                </div>
-              )}
-              <div className="flex justify-between border-b border-[#2a2a2a] pb-2">
-                <span className="text-[#666]">Temps</span>
-                <span>
-                  {String(minutes).padStart(2, "0")}:{String(seconds).padStart(2, "0")}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-3 mt-8">
-              <button
-                onClick={restartGame}
-                className="border border-[#ff3b3b] bg-[#1f1111] hover:bg-[#2a1111] text-[#ff3b3b] py-3 px-6 font-mono text-sm tracking-wider transition-colors cursor-pointer"
-              >
-                REJOUER
-              </button>
-              <button
-                onClick={goToMenu}
-                className="border border-[#2a2a2a] bg-[#1a1a1a] hover:border-[#666] text-[#666] py-3 px-6 font-mono text-sm tracking-wider transition-colors cursor-pointer"
-              >
-                MENU
-              </button>
-            </div>
-          </div>
-        </div>
+        <ResultScreen
+          won={gameState === "won"}
+          modeConfig={modeConfig}
+          scoring={scoringRef.current}
+          finalTime={finalTime}
+          minesHit={speedDemonRef.current?.minesHit ?? 0}
+          onRestart={restartGame}
+          onMenu={goToMenu}
+        />
       </>
     );
   }
